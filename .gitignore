@@ -1,4 +1,7 @@
 # .gitignore
+.idea/
+QQWry.dat
+
 *.o
 *.pyc
 

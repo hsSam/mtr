@@ -38,6 +38,14 @@
 #include "utils.h"
 
 #include "img/mtr_icon.xpm"
+
+#include <iconv.h>
+#include <errno.h>
+#define QQWRY "QQWry.dat"
+#define REDIRECT_MODE_1 0x01
+#define REDIRECT_MODE_2 0x02
+#define MAXBUF 255
+
 #endif
 
 static gint gtk_ping(
@@ -324,6 +332,7 @@ enum {
     COL_ASN,
 #endif
     COL_HOSTNAME,
+    COL_ADDRESS,
     COL_LOSS,
     COL_RCV,
     COL_SNT,
@@ -382,6 +391,7 @@ static void TreeViewCreate(
                                      G_TYPE_STRING,
 #endif
                                      G_TYPE_STRING,
+                                     G_TYPE_STRING,
                                      G_TYPE_FLOAT,
                                      G_TYPE_INT,
                                      G_TYPE_INT,
@@ -414,6 +424,15 @@ static void TreeViewCreate(
     column = gtk_tree_view_column_new_with_attributes("Hostname",
                                                       renderer,
                                                       "text", COL_HOSTNAME,
+                                                      "foreground",
+                                                      COL_COLOR, NULL);
+    gtk_tree_view_column_set_expand(column, TRUE);
+    gtk_tree_view_column_set_resizable(column, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(ReportTreeView), column);
+
+    column = gtk_tree_view_column_new_with_attributes("Address",
+                                                      renderer,
+                                                      "text", COL_ADDRESS,
                                                       "foreground",
                                                       COL_COLOR, NULL);
     gtk_tree_view_column_set_expand(column, TRUE);
@@ -498,6 +517,164 @@ static void TreeViewCreate(
 
 }
 
+/*unsigned long getValue( 获取文件中指定的16进制串的值，并返回
+FILE *fp, 指定文件指针
+unsigned long start, 指定文件偏移量
+int length) 获取的16进制字符个数/长度
+*/
+static unsigned long getValue(FILE *fp, unsigned long start, int length)
+{
+    unsigned long variable = 0;
+    long val[255], i;
+
+    fseek(fp, start, SEEK_SET);
+    for (i = 0; i<length; i++)
+    {
+        /*过滤高位，一次读取一个字符*/
+        val[i] = fgetc(fp) & 0x000000FF;
+    }
+    for (i = length - 1; i >= 0; i--)
+    {
+        /*因为读取多个16进制字符，叠加*/
+        variable = variable * 0x100 + val[i];
+    }
+    return variable;
+};
+
+/*void getHead( 读取索引部分的范围（在文件头中，最先的2个8位16进制）
+FILE *fp, 指定文件指针
+unsigned long *start, 文件偏移量，索引的起止位置
+unsigned long *end) 文件偏移量，索引的结束位置
+*/
+static void getHead(FILE *fp, unsigned long *start, unsigned long *end)
+{
+    /*索引的起止位置的文件偏移量，存储在文件头中的前8个16进制中
+    设置偏移量为0，读取4个字符*/
+    *start = getValue(fp, 0L, 4);
+    /*索引的结束位置的文件偏移量，存储在文件头中的第8个到第15个的16进制中
+    设置偏移量为4个字符，再读取4个字符*/
+    *end = getValue(fp, 4L, 4);
+};
+
+/*int getString( 获取文件中指定的字符串，返回字符串长度
+FILE *fp, 指定文件指针
+unsigned long start, 指定文件偏移量
+char **string) 用来存放将读取字符串的字符串空间的首地址
+*/
+int getString(FILE *fp, unsigned long start, char **string)
+{
+    unsigned long i = 0;
+    char val;
+    fseek(fp, start, SEEK_SET);
+    /*读取字符串，直到遇到0x00为止*/
+    do
+    {
+        val = fgetc(fp);
+        /*依次放入用来存储的字符串空间中*/
+        *(*string + i) = val;
+        i++;
+    } while (val != 0x00);
+    /*返回字符串长度*/
+    return i;
+};
+
+/*unsigned long searchIP( 搜索指定IP在索引区的位置，采用二分查找法；
+返回IP在索引区域的文件偏移量
+一条索引记录的结果是，前4个16进制表示起始IP地址
+后面3个16进制，表示该起始IP在IP信息段中的位置，文件偏移量
+FILE *fp,
+unsigned long index_start, 索引起始位置的文件偏移量
+unsigned long index_end, 索引结束位置的文件偏移量
+unsigned long ip) 关键字，要索引的IP
+*/
+unsigned long searchIP(FILE *fp, unsigned long index_start, \
+
+                       unsigned long index_end, uint32_t ip)
+{
+    unsigned long index_current, index_top, index_bottom;
+    unsigned long record;
+    index_bottom = index_start;
+    index_top = index_end;
+    /*此处的7，是因为一条索引记录的长度是7*/
+    index_current = ((index_top - index_bottom) / 7 / 2) * 7 + index_bottom;
+    /*二分查找法*/
+    do{
+        record = getValue(fp, index_current, 4);
+        if (record>ip)
+        {
+            index_top = index_current;
+            index_current = ((index_top - index_bottom) / 14) * 7 + index_bottom;
+        }
+        else
+        {
+            index_bottom = index_current;
+            index_current = ((index_top - index_bottom) / 14) * 7 + index_bottom;
+        }
+    } while (index_bottom<index_current);
+    /*返回关键字IP在索引区域的文件偏移量*/
+    return index_current;
+};
+
+/*void getAddress( 读取指定IP的国家位置和地域位置
+FILE *fp, 指定文件指针
+unsigned long start, 指定IP在索引中的文件偏移量
+char **country, 用来存放国家位置的字符串空间的首地址
+char **location) 用来存放地域位置的字符串空间的首地址
+*/
+void getAddress(FILE *fp, unsigned long start, char **country, char **location)
+{
+    unsigned long redirect_address, counrty_address, location_address;
+    char val;
+
+    start += 4;
+    fseek(fp, start, SEEK_SET);
+    /*读取首地址的值*/
+    val = (fgetc(fp) & 0x000000FF);
+
+    if (val == REDIRECT_MODE_1)
+    {
+        /*重定向1类型的*/
+        redirect_address = getValue(fp, start + 1, 3);
+        fseek(fp, redirect_address, SEEK_SET);
+        /*混合类型，重定向1类型进入后遇到重定向2类型
+        读取重定向后的内容，并设置地域位置的文件偏移量*/
+        if ((fgetc(fp) & 0x000000FF) == REDIRECT_MODE_2)
+        {
+            counrty_address = getValue(fp, redirect_address + 1, 3);
+            location_address = redirect_address + 4;
+            getString(fp, counrty_address, country);
+        }
+            /*读取重定向1后的内容，并设置地域位置的文件偏移量*/
+        else
+        {
+            counrty_address = redirect_address;
+            location_address = redirect_address + getString(fp, counrty_address, country);
+        }
+    }
+        /*重定向2类型的*/
+    else if (val == REDIRECT_MODE_2)
+    {
+        counrty_address = getValue(fp, start + 1, 3);
+        location_address = start + 4;
+        getString(fp, counrty_address, country);
+    }
+    else
+    {
+        counrty_address = start;
+        location_address = counrty_address + getString(fp, counrty_address, country);
+    }
+
+    /*读取地域位置*/
+    fseek(fp, location_address, SEEK_SET);
+    if ((fgetc(fp) & 0x000000FF) == REDIRECT_MODE_2 || (fgetc(fp) & 0x000000FF) == REDIRECT_MODE_1)
+    {
+        location_address = getValue(fp, location_address + 1, 3);
+    }
+    getString(fp, location_address, location);
+
+    return;
+};
+
 static void update_tree_row(
     struct mtr_ctl *ctl,
     int row,
@@ -506,7 +683,89 @@ static void update_tree_row(
     ip_t *addr;
     char str[256] = "???", *name = str;
 
+    FILE *fp;
+    iconv_t conv_desc;
+    unsigned long index_start, index_end, current;
+    char *country;
+    char *location;
+    char *out_string;
+    size_t len;
+    size_t utf8len;
+    uint32_t haddr;
+    int rc;
+//    unsigned int i=0;
+    char   *inptr;
+    char   *outptr;
+
+    country = (char*)malloc(256);
+    location = (char*)malloc(256);
+    out_string = (char*)malloc(256);
+
+//    memset(country,0,255);
+//    memset(location,0,255);
+//    memset(out_string,0,255);
+
     addr = net_addr(row);
+    haddr = addr->s_addr;
+
+//    printf("%s___\n", inet_ntoa(*addr));
+//    printf("%u________\n", haddr);
+
+    haddr = ((haddr >> 24) & 0xff) | (((haddr >> 16) & 0xff) << 8) | (((haddr >> 8) & 0xff) << 16) | ((haddr & 0xff) << 24);
+//    printf("%u________\n", haddr);
+
+    fp = fopen(QQWRY, "rb");
+    if(fp) {
+        getHead(fp, &index_start, &index_end);
+        getAddress(fp, getValue(fp, index_end + 4, 3), &country, &location);
+        //搜索IP在索引区域的条目的偏移量
+        current = searchIP(fp, index_start, index_end, haddr);
+        //获取该IP对因的国家地址和地域地址
+        getAddress(fp, getValue(fp, current + 4, 3), &country, &location);
+
+//        printf("len: %d__\n", (int)strlen(country));
+//        for(i=0;i<strlen(country);i++) {
+//            printf("%X", country[i] & 0xFF);
+//        }
+
+        conv_desc = iconv_open ("utf-8", "gb2312");
+        if (conv_desc == (iconv_t)-1) {
+            printf("iconv_open error!");
+        } else {
+            inptr = location;
+            outptr = out_string;
+            len = strlen(location) * 4;
+            utf8len = len;
+            rc = iconv(conv_desc, &inptr, &len, &outptr, &utf8len);
+            if (rc == -1) {
+//                switch (errno) {
+//                    /* See "man 3 iconv" for an explanation. */
+//                    case EILSEQ:
+//                        fprintf (stderr, "Invalid multibyte sequence.\n");
+//                        break;
+//                    case EINVAL:
+//                        fprintf (stderr, "Incomplete multibyte sequence.\n");
+//                        break;
+//                    case E2BIG:
+//                        fprintf (stderr, "No more room.\n");
+//                        break;
+//                    default:
+//                        fprintf (stderr, "Error: %s.\n", strerror (errno));
+//                }
+//                // exit ok
+////                exit (1);
+            }
+            iconv_close (conv_desc);
+        }
+
+//        printf("%s___\n", country);
+//        printf("%s___\n", location);
+//        printf("len out_string: %d \n", (int)strlen(out_string));
+//        printf("%s___\n", out_string);
+//        printf("%s__%s\n", country, location);
+        fclose(fp);
+    }
+
     if (addrcmp((void *) addr, (void *) &ctl->unspec_addr, ctl->af)) {
         if ((name = dns_lookup(ctl, addr))) {
             if (ctl->show_ips) {
@@ -520,6 +779,7 @@ static void update_tree_row(
 
     gtk_list_store_set(ReportStore, iter,
                        COL_HOSTNAME, name,
+                       COL_ADDRESS, out_string,
                        COL_LOSS, (float) (net_loss(row) / 1000.0),
                        COL_RCV, net_returned(row),
                        COL_SNT, net_xmit(row),
