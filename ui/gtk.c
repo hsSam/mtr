@@ -681,7 +681,7 @@ static void update_tree_row(
     GtkTreeIter * iter)
 {
     ip_t *addr;
-    char str[256] = "???", *name = str;
+    char str[256] = "???", str2[256] = "???", *name = str;
 
     FILE *fp;
     iconv_t conv_desc;
@@ -689,6 +689,7 @@ static void update_tree_row(
     char *country;
     char *location;
     char *out_string;
+    char *out_string2;
     size_t len;
     size_t utf8len;
     uint32_t haddr;
@@ -700,6 +701,7 @@ static void update_tree_row(
     country = (char*)malloc(256);
     location = (char*)malloc(256);
     out_string = (char*)malloc(256);
+    out_string2 = (char*)malloc(256);
 
 //    memset(country,0,255);
 //    memset(location,0,255);
@@ -755,13 +757,23 @@ static void update_tree_row(
 //                // exit ok
 ////                exit (1);
             }
+
+            inptr = country;
+            outptr = out_string2;
+            len = strlen(country) * 4;
+            utf8len = len;
+            rc = iconv(conv_desc, &inptr, &len, &outptr, &utf8len);
+
+            snprintf(str2, sizeof(str2), "%s %s", out_string2,
+                     out_string);
+
             iconv_close (conv_desc);
         }
 
 //        printf("%s___\n", country);
 //        printf("%s___\n", location);
 //        printf("len out_string: %d \n", (int)strlen(out_string));
-//        printf("%s___\n", out_string);
+//        printf("%s___\n", str2);
 //        printf("%s__%s\n", country, location);
         fclose(fp);
     }
@@ -779,7 +791,7 @@ static void update_tree_row(
 
     gtk_list_store_set(ReportStore, iter,
                        COL_HOSTNAME, name,
-                       COL_ADDRESS, out_string,
+                       COL_ADDRESS, str2,
                        COL_LOSS, (float) (net_loss(row) / 1000.0),
                        COL_RCV, net_returned(row),
                        COL_SNT, net_xmit(row),
