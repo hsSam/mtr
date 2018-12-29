@@ -16,11 +16,11 @@ See the COPYING file for details.
 
 INSTALLING
 ===
-
+(notice: with ip addree only support ipv4)
 If you're building this from a tarball, compiling mtr is as
 simple as:
 
-	./configure && make
+	 ./configure --disable-ipv6 && make
 
 (in the past, there was a Makefile in the distribution that did
 the `./configure` for you and then ran make again with the generated
@@ -29,12 +29,12 @@ with git.)
 
 If you're building from the git repository, you'll need to run:
 
-	./bootstrap.sh && ./configure && make
+	./bootstrap.sh && ./configure --disable-ipv6 && make
 
 When it looks as if the compilation was succesful, you can
 test mtr with
 
-	sudo ./mtr <host>
+	sudo ./mtr -n <host>
 
 (fill in a hostname or IP address where it says <host>) or
 immediately continue on to installing:
